@@ -1,0 +1,37 @@
+# R
+.Rhistory
+.RData
+.Rproj.user
+*.Rproj
+.Ruserdata
+
+# Workspaces
+workspaces/
+workspaces_R/
+
+# Outputs
+outputs/
+results/
+
+# Data
+*.xlsx
+*.csv
+*.rds
+*.tif
+*.tiff
+*.grd
+*.gri
+*.nc
+*.shp
+*.dbf
+*.shx
+*.prj
+*.gpkg
+
+# HTML
+*.html
+*.nb.html
+
+# OS
+.DS_Store
+Thumbs.db
