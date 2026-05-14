@@ -1,0 +1,168 @@
+---
+title: "STTSTJ_coral_cover_trend"
+author: "Julian Olaya-Restrepo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(janitor)
+library(scales)
+```
+
+Data Ingestion
+In this section, we load the raw NCRMP site-level data for St. Thomas and St. John (STTSTJ) to inspect the temporal range and variable types
+
+```{r cars}
+# Define path
+path_csv <- "G:/Shared drives/NSF CoPE internal/GIS_CoPE/GIS_USVI/2_model_inputs_usvi/Fisheries/coral_cover_modeling/01_inputs_csv/NCRMP_STTSTJ_2013_25_percent_cover_site.csv"
+
+# Load and clean names
+coral_raw <- read_csv(path_csv) %>% 
+  clean_names()
+
+# Initial inspection
+glimpse(coral_raw)
+```
+
+
+```{r}
+## 1. Prepare Data for All Groups
+# We calculate mean and standard error for every benthic category
+benthic_trends <- coral_raw %>%
+  group_by(year, cover_group) %>%
+  summarise(
+    n = n(),
+    mean_cover = mean(percent_cvr, na.rm = TRUE),
+    se_cover = sd(percent_cvr, na.rm = TRUE) / sqrt(n),
+    .groups = 'drop'
+  )
+
+## 2. Faceted Plot (Individual plots for each group)
+# This allows for clear inspection of groups with very different scales
+ggplot(benthic_trends, aes(x = year, y = mean_cover, color = cover_group)) +
+  geom_ribbon(aes(ymin = mean_cover - se_cover, ymax = mean_cover + se_cover, fill = cover_group), 
+              alpha = 0.15, color = NA) +
+  geom_line(size = 1) +
+  geom_point() +
+  facet_wrap(~cover_group, scales = "free_y") + 
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none") +
+  # --- X-Axis Adjustment Starts Here ---
+  scale_x_continuous(
+    breaks = unique(benthic_trends$year), 
+    labels = as.character(unique(benthic_trends$year))
+  ) +
+  # --- X-Axis Adjustment Ends Here ---
+  labs(
+    title = "Benthic Community Trends by Group (Faceted)",
+    subtitle = "Mean Percent Cover ± SE (Note: Y-axes are independent)",
+    x = "Year",
+    y = "Mean Percent Cover (%)"
+  )
+
+## 3. Overlay Plot (All groups in one professional visualization)
+# This shows the relative dominance of different groups over time
+ggplot(benthic_trends, aes(x = year, y = mean_cover, color = cover_group, group = cover_group)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_color_brewer(palette = "Set1") + # Distinct colors for the 8 groups
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Benthic Community Compositional Shifts (2013-2025)",
+    subtitle = "Temporal comparison of all cover groups",
+    x = "Survey Year",
+    y = "Mean Percent Cover (%)",
+    color = "Cover Group"
+  ) +
+  scale_x_continuous(breaks = seq(2013, 2025, by = 2)) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold")
+  )
+```
+
+This code investigates the relationship between Depth and Cover Group, and explores how Habitat affects the distribution
+
+```{r}
+## 1. Depth-Response Curves by Group
+# This helps identify which groups are depth-sensitive
+ggplot(coral_raw, aes(x = min_depth, y = percent_cvr, color = cover_group)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = TRUE) +
+  facet_wrap(~cover_group, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "Ecological Niche: Benthic Cover vs. Depth",
+    subtitle = "Non-linear relationships using Generalized Additive Models (GAM)",
+    x = "Minimum Depth (m)",
+    y = "Percent Cover (%)"
+  )
+
+## 2. Categorical Distribution: Habitat & Management
+# Let's look at Hard Corals specifically across different Management Zones (admin)
+coral_raw %>%
+  filter(cover_group == "HARD CORALS") %>%
+  ggplot(aes(x = admin, y = percent_cvr, fill = admin)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  theme_bw() +
+  coord_flip() + # Better for long labels
+  labs(
+    title = "Hard Coral Cover by Management Area (admin)",
+    x = "Management Unit",
+    y = "Percent Cover (%)"
+  )
+
+## 3. Correlation Matrix (Numeric)
+# Checking if max_depth and min_depth are redundant (collinearity check)
+library(corrr)
+coral_raw %>%
+  select(min_depth, max_depth, percent_cvr) %>%
+  correlate() %>%
+  shave() %>%
+  fashion()
+```
+
+```{r}
+library(mgcv) # The engine for GAMs
+
+# 1. Run a GAM for each group and extract the key statistics
+gam_summaries <- coral_raw %>%
+  group_by(cover_group) %>%
+  do(model = gam(percent_cvr ~ s(min_depth, bs = "cs"), data = .)) %>%
+  summarise(
+    cover_group = cover_group,
+    # Deviance explained: similar to R-squared
+    deviance_explained = summary(model)$dev.expl * 100,
+    # p-value: is the relationship significant?
+    p_value = summary(model)$s.table[1, 4],
+    # EDF: > 1 means non-linear. Higher = more complex relationship
+    edf = summary(model)$s.table[1, 1],
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(deviance_explained))
+
+print(gam_summaries)
+```
+
+
+
+
+
+
+
+
+
+
+### Key points for your Workflow:
+
+*   **Reproducibility:** By using `clean_names()`, we ensure that even if the CSV has spaces or weird characters in the headers, R will convert them to lowercase and underscores (e.g., `YEAR` becomes `year`, `Percent Cover` becomes `percent_cover`).
+*   **Audit:** The `sampling_summary` table is your first "sanity check." It tells you if there are years with very low data (e.g., COVID years or hurricane gaps) that might skew the descriptive statistics.
+
+**Once you run this block in your RStudio, please check:**
+1.  Is the coral cover column called `percent_cover`?
+2.  Are the years indeed ranging from 2013 to 2025?
+3.  Are there any unexpected `NA` values in the target variable?
+
+**Tell me what you find, and we will proceed to the next block: Statistical Summary & Visualization (Time-series Boxplots).**
