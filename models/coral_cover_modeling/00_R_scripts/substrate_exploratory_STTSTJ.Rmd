@@ -1,8 +1,10 @@
 ---
-title: "STTSTJ_coral_cover_trend"
+title: "Hard Coral Cover Data Selection and Exploration"
 author: "Julian Olaya-Restrepo"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -12,8 +14,9 @@ library(janitor)
 library(scales)
 ```
 
-Data Ingestion
-In this section, we load the raw NCRMP site-level data for St. Thomas and St. John (STTSTJ) to inspect the temporal range and variable types
+# Data Source and Selection Criteria
+We utilized benthic community data from the National Coral Reef Monitoring Program (NCRMP) for St. Thomas and St. John (STTSTJ), U.S. Virgin Islands. The dataset spans from 2013 to 2025 and contains site-level percent cover estimates for eight benthic functional groups: crustose coralline algae (CCA), hard corals, macroalgae, other substrates, soft corals, sponges, turf algae, and bare substrate.
+
 
 ```{r cars}
 # Define path
@@ -27,6 +30,15 @@ coral_raw <- read_csv(path_csv) %>%
 glimpse(coral_raw)
 ```
 
+
+The NCRMP dataset contained 13,744 total observations across all years, regions, and benthic groups. Each observation represents percent cover at a primary sampling unit (PSU), with associated metadata including:
+
+- Spatial information: Latitude and longitude (decimal degrees), depth range
+- Stratification variables: Analysis stratum, habitat code, protection status
+- Administrative data: Sub-region, management designation
+
+
+### Visualization
 
 ```{r}
 ## 1. Prepare Data for All Groups
@@ -124,45 +136,185 @@ coral_raw %>%
   fashion()
 ```
 
+## Filter 2025 data
+
+All 276 hard coral observations for 2025 had complete geographic coordinates (100% spatial completeness), ensuring no data loss during the planned spatial join with environmental predictor layers in ArcGIS.
+
+### Data Structure and Completeness
+
+For our boosted regression tree (BRT) modeling framework, we selected hard coral cover as a key environmental predictor variable based on its established ecological importance as habitat structure for reef fish assemblages. We filtered the data to include only:
+
+- Year: 2025 (matching the fish biomass survey year)
+- Region: STTSTJ (St. Thomas and St. John)
+- Benthic group: HARD CORALS
+
+This selection resulted in 276 sampling points with complete geographic coordinates, ready for spatial integration with the 50m × 50m modeling grid.
+
+
 ```{r}
-library(mgcv) # The engine for GAMs
-
-# 1. Run a GAM for each group and extract the key statistics
-gam_summaries <- coral_raw %>%
-  group_by(cover_group) %>%
-  do(model = gam(percent_cvr ~ s(min_depth, bs = "cs"), data = .)) %>%
-  summarise(
-    cover_group = cover_group,
-    # Deviance explained: similar to R-squared
-    deviance_explained = summary(model)$dev.expl * 100,
-    # p-value: is the relationship significant?
-    p_value = summary(model)$s.table[1, 4],
-    # EDF: > 1 means non-linear. Higher = more complex relationship
-    edf = summary(model)$s.table[1, 1],
-    .groups = 'drop'
+# Filter for hard corals in 2025 and extract coordinates
+hard_coral_2025 <- coral_raw %>%
+  filter(
+    year == 2025,
+    cover_group == "HARD CORALS"
   ) %>%
-  arrange(desc(deviance_explained))
+  select(
+    primary_sample_unit,
+    region,
+    lat = lat_degrees,  # Adjust column name if different
+    lon = lon_degrees,  # Adjust column name if different
+    hard_coral_cover = percent_cvr,
+    max_depth = max_depth,    # Include if available
+    everything()        # Keep all other columns for reference
+  )
 
-print(gam_summaries)
+# Summary of coral data
+cat("\n=== HARD CORAL COVER DATA SUMMARY (2025) ===\n\n")
+cat("Total sampling points:", nrow(hard_coral_2025), "\n")
+cat("Regions:", paste(unique(hard_coral_2025$region), collapse = ", "), "\n\n")
+
+# Check for missing coordinates
+cat("=== COORDINATE COMPLETENESS ===\n")
+cat("Points with complete coordinates:", 
+    sum(!is.na(hard_coral_2025$lat) & !is.na(hard_coral_2025$lon)), "\n")
+cat("Points missing lat:", sum(is.na(hard_coral_2025$lat)), "\n")
+cat("Points missing lon:", sum(is.na(hard_coral_2025$lon)), "\n\n")
+
+# Statistical summary of hard coral cover
+cat("=== HARD CORAL COVER STATISTICS ===\n\n")
+coral_stats <- hard_coral_2025 %>%
+  summarise(
+    n_sites = n(),
+    mean_cover = round(mean(hard_coral_cover, na.rm = TRUE), 2),
+    sd_cover = round(sd(hard_coral_cover, na.rm = TRUE), 2),
+    median_cover = round(median(hard_coral_cover, na.rm = TRUE), 2),
+    min_cover = round(min(hard_coral_cover, na.rm = TRUE), 2),
+    max_cover = round(max(hard_coral_cover, na.rm = TRUE), 2),
+    q25_cover = round(quantile(hard_coral_cover, 0.25, na.rm = TRUE), 2),
+    q75_cover = round(quantile(hard_coral_cover, 0.75, na.rm = TRUE), 2)
+  )
+
+print(coral_stats)
+
+# Summary by region
+cat("\n=== HARD CORAL COVER BY REGION ===\n")
+coral_by_region <- hard_coral_2025 %>%
+  group_by(region) %>%
+  summarise(
+    n_sites = n(),
+    mean_cover = round(mean(hard_coral_cover, na.rm = TRUE), 2),
+    sd_cover = round(sd(hard_coral_cover, na.rm = TRUE), 2),
+    median_cover = round(median(hard_coral_cover, na.rm = TRUE), 2),
+    min_cover = round(min(hard_coral_cover, na.rm = TRUE), 2),
+    max_cover = round(max(hard_coral_cover, na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+
+print(coral_by_region)
+
+# Spatial extent check
+cat("\n=== SPATIAL EXTENT ===\n")
+spatial_extent <- hard_coral_2025 %>%
+  summarise(
+    min_lat = round(min(lat, na.rm = TRUE), 4),
+    max_lat = round(max(lat, na.rm = TRUE), 4),
+    min_lon = round(min(lon, na.rm = TRUE), 4),
+    max_lon = round(max(lon, na.rm = TRUE), 4)
+  )
+
+print(spatial_extent)
+
+# Export for ArcGIS
+write.csv(hard_coral_2025, 
+          "hard_coral_cover_2025_points.csv", 
+          row.names = FALSE)
+
+cat("\n=== CORAL DATA EXPORTED ===\n")
+cat("File: hard_coral_cover_2025_points.csv\n")
+cat("Points:", nrow(hard_coral_2025), "\n")
+cat("Ready for ArcGIS 'Value to Point' tool\n\n")
+
+cat("Key columns for spatial join:\n")
+cat("  - lat: Latitude (decimal degrees)\n")
+cat("  - lon: Longitude (decimal degrees)\n")
+cat("  - hard_coral_cover: Hard coral percent cover\n")
+cat("  - region: Survey region\n\n")
+
+# Preview
+cat("=== FIRST 10 ROWS ===\n")
+hard_coral_2025 %>%
+  select(primary_sample_unit, region, lat, lon, hard_coral_cover) %>%
+  head(10) %>%
+  print()
+```
+
+# Hard Coral Cover Distribution (2025)
+
+**Overall Statistics**
+Hard coral cover across the 276 sampling sites exhibited low mean cover with high spatial heterogeneity:
+
+_ Mean cover: 3.74% (SD = 4.13%)
+- Median cover: 3.00%
+- Range: 0–29%
+- Interquartile range: 0–5% (Q25 = 0%, Q75 = 5%)
+
+The distribution was right-skewed, with 50% of sites having <=3% hard coral cover and 75% of sites having <=5% cover. This indicates a reef system dominated by low coral cover, consistent with regional patterns of coral decline in the Caribbean. The maximum observed cover of 29% was substantially higher than the mean, suggesting a few sites with relatively healthy coral communities persist within the study area.
+
+
+## Hard Coral Cover Visualization
+```{r}
+# Histogram
+ggplot(hard_coral_2025, aes(x = hard_coral_cover, fill = region)) +
+  geom_histogram(bins = 20, alpha = 0.7, color = "black") +
+  scale_fill_manual(values = c("STTSTJ" = "steelblue", "STX" = "coral")) +
+  theme_classic() +
+  labs(
+    title = "Hard Coral Cover Distribution (2025)",
+    x = "Hard Coral Cover (%)",
+    y = "Frequency (number of sites)",
+    fill = "Region"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+```
+
+## Spatial Extent
+
+The sampling design covered the insular shelf surrounding St. Thomas and St. John:
+
+- Latitudinal range: 18.1783°N to 18.4139°N (spanning ~26.1 km)
+- Longitudinal range: -65.1451°W to -64.6379°W (spanning ~46.2 km)
+
+This spatial coverage encompasses the major reef habitats surrounding both islands, including fringing reefs, patch reefs, and shelf-edge habitats at varying depths.
+
+
+
+```{r}
+# Spatial map of coral cover with colorblind-friendly palette
+ggplot(hard_coral_2025, aes(x = lon, y = lat, color = hard_coral_cover, 
+                            size = hard_coral_cover)) +
+  geom_point(alpha = 0.7) +
+  scale_color_gradientn(
+    colors = c("#440154", "#3b528b", "#21918c", "#5ec962", "#fde724"),
+    name = "Hard Coral\nCover (%)",
+    values = scales::rescale(c(0, 5, 10, 15, 29))
+  ) +
+  scale_size_continuous(range = c(1, 6), name = "Hard Coral\nCover (%)") +
+  theme_minimal() +
+  labs(
+    title = "Spatial Distribution of Hard Coral Cover (2025)",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.position = "right"
+  )
 ```
 
 
 
 
 
-
-
-
-
-
-### Key points for your Workflow:
-
-*   **Reproducibility:** By using `clean_names()`, we ensure that even if the CSV has spaces or weird characters in the headers, R will convert them to lowercase and underscores (e.g., `YEAR` becomes `year`, `Percent Cover` becomes `percent_cover`).
-*   **Audit:** The `sampling_summary` table is your first "sanity check." It tells you if there are years with very low data (e.g., COVID years or hurricane gaps) that might skew the descriptive statistics.
-
-**Once you run this block in your RStudio, please check:**
-1.  Is the coral cover column called `percent_cover`?
-2.  Are the years indeed ranging from 2013 to 2025?
-3.  Are there any unexpected `NA` values in the target variable?
-
-**Tell me what you find, and we will proceed to the next block: Statistical Summary & Visualization (Time-series Boxplots).**

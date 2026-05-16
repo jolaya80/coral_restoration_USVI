@@ -1,6 +1,7 @@
 ### Mapping reef indicators for MAR
 ### by Jade Delevaux 03/17/2020
 ### by Jade Delevaux 10/10/2024
+### adapted by Julian Olaya-Restrepo for USVI region
 
 ##### Load required libraries ######
 require(dismo)
@@ -44,7 +45,7 @@ Fit.BRT.Model <- function(i) {
            tree.complexity=tuning_parameters[i,3],
            learning.rate=tuning_parameters[i,1],
            bag.fraction=tuning_parameters[i,2],
-           n.folds=10,
+           n.folds=5,
            family="gaussian",
            plot.main=FALSE)
 }
@@ -104,7 +105,7 @@ Back.Transform.Prediction <- function(i) {
 
 #### 1/ Set variables ####
 reef <- "benthic"
-model <- "3"
+model <- "1"
 response_var <- "cor"  	#response variable attribute field name
 output_name <- "cor"	#generic name of response variable for use in output file names
 transformation <- "square.root" #options include "log", "square.root", and "fourth.root"
@@ -114,28 +115,38 @@ nCPUs <- detectCores()-1		#detect number of processing cores for parallel proces
 set.seed(28)
 
 ## set working directory
-setwd("G:/Shared drives/NSF CoPE internal/GIS_CoPE/GIS_Belize/2_model_inputs_belize/coral_reef_modeling")
+setwd("C:/Users/jolaya/Documents/GitHub_projects/coral_restoration_USVI/models/coral_cover_modeling")
 
 ##### 2/ Import data #####
-predictor_set <- as.vector(read.csv(file.path("01_input_csv", paste("0_predictors_benthic.csv",sep="")), header=FALSE)[,1])
+predictor_set <- as.vector(read.csv(file.path("01_inputs_csv", paste("0_predictors_benthic.csv",sep="")), header=FALSE)[,1])
 predictor_set
 
 # Import data frame with coordinates, response variables, and extracted environmental predictor values (all variables)
-data <- read.csv(file.path("01_input_csv", "bz_data_model.csv"))
+data <- read.csv(file.path("01_inputs_csv", "usvi_data_model.csv"))
 # data$cor<- as.numeric(data$cor)
 
 #### 3/ Build database ####
 # Remove data surveys for which the response variable is NA
 data <- data[which(!is.na(data[,response_var])),]
-# Apply transformation to response variable and store as new variable in data frame
-response_var_transformed <- paste(transformation,".",response_var,sep="")
-data[[response_var_transformed]] <- Transform.Data(data[[response_var]], transformation) 
+
 # Subset data to include only the coordinates, the response variable, 
 # and the extracted values of the potential environment predictors for the 
 # specified island group 
-data <- data[,c("x", "y", response_var, response_var_transformed, predictor_set)]
-hist(data$square.root.cor)
-write.csv(data, file.path("01_input_csv", paste(model, output_name,"data.csv",sep="_")))
+data <- data[,c("x", "y", response_var, predictor_set)]
+# 5. Check that there are no NAs remaining in predictors (should all be FALSE)
+print(summary(is.na(data[, predictor_set])))
+
+# Remove all rows with any NA in predictors
+na_filter <- complete.cases(data[, predictor_set])
+cat(sum(!na_filter), "rows were removed due to NA(s) in predictors.\n")
+data <- data[na_filter, ]
+
+response_var_transformed <- paste(transformation, response_var, sep=".")
+data[[response_var_transformed]] <- Transform.Data(data[[response_var]], transformation)
+
+# 6. Explore response distribution (histogram)
+hist(data[[response_var_transformed]])
+write.csv(data, file.path("01_inputs_csv", paste(model, output_name,"data.csv",sep="_")))
 
 # # Create model calibration and model validation subsets by randomly selecting specified percentages of rows in "data"
 # calib_ix <- sample(seq(1,nrow(data)), ((100-training_holdout)/100)*nrow(data))
@@ -149,18 +160,27 @@ write.csv(data, file.path("01_input_csv", paste(model, output_name,"data.csv",se
 ##### 4/ Model tuning #####
 # Cross-validation optimization of boosted regression tree model tuning parameters
 # Create lists of model tuning parameter options
-lr <- c(0.01,0.001,0.005) 	#list of options for learning rate
+lr <- c(0.01,0.005) 	#list of options for learning rate
 bag <- c(0.5,0.75) 		#list of options for bag fraction
-tc <- c(2,3,4,5,10) 		#list of options for tree complexity
+tc <- c(2,3,4) 		#list of options for tree complexity
+
 # Create a data frame of all possible combinations of tuning parameters
 tuning_parameters <- expand.grid(lr,bag,tc)	
 names(tuning_parameters) <- c("learning.rate","bag.fraction","tree.complexity")
+
 # Create a data frame to store boosted regression tree model statistics
-model_tuning_outputs <- data.frame(mean.total.dev=rep(NA,nrow(tuning_parameters)),
-                                   mean.resid.dev=rep(NA,nrow(tuning_parameters)),
-                                   cv.mean.dev=rep(NA,nrow(tuning_parameters)),
-                                   cv.se.dev=rep(NA,nrow(tuning_parameters)),
-                                   perc.dev.expl=rep(NA,nrow(tuning_parameters)))
+# Prepare results data frame, with a column for model success/failure tracking
+model_tuning_outputs <- data.frame(
+  learning.rate = tuning_parameters$learning.rate,
+  bag.fraction = tuning_parameters$bag.fraction,
+  tree.complexity = tuning_parameters$tree.complexity,
+  mean.total.dev=NA,
+  mean.resid.dev=NA,
+  cv.mean.dev=NA,
+  cv.se.dev=NA,
+  perc.dev.expl=NA,
+  fit_success = FALSE
+)
 
 # Loop through (in parallel) all possible model tuning parameter combinations, each time fitting a 
 # boosted regression tree model with the optimal number of boosting trees
@@ -174,18 +194,41 @@ cl <- makeCluster(nCPUs)
 clusterExport(cl, list("response_var_transformed", "predictor_set", "data", "tuning_parameters"))
 gbm_models_step <- parLapply(cl, seq(1,nrow(tuning_parameters)), Fit.BRT.Model)
 stopCluster(cl)
+
 # For each boosted regression tree model from model parameter tuning, extract statistics
-for (i in seq(1,nrow(tuning_parameters))) {
-  model_tuning_outputs[i,1] <- gbm_models_step[[i]]$self.statistics$mean.null				# mean total deviance
-  model_tuning_outputs[i,2] <- gbm_models_step[[i]]$self.statistics$mean.resid			# mean residual deviance
-  model_tuning_outputs[i,3] <- gbm_models_step[[i]]$cv.statistics$deviance.mean			# cross-validation mean residual deviance
-  model_tuning_outputs[i,4] <- gbm_models_step[[i]]$cv.statistics$deviance.se				# cross-validation standard error residual deviance
-  model_tuning_outputs[i,5] <- ((model_tuning_outputs[i,1] - model_tuning_outputs[i,3])/model_tuning_outputs[i,1])*100 # Calculate percent deviance explained	
+failed_models <- c()
+for (i in seq_len(nrow(tuning_parameters))) {
+  gbm_fit <- gbm_models_step[[i]]
+  if (is.null(gbm_fit)) {
+    cat("Model failed for tuning param set:",
+        paste(names(tuning_parameters), tuning_parameters[i, ], sep="=", collapse=", "), "\n")
+    failed_models <- c(failed_models, i)
+    next
+  }
+  # Only fill stats for successful models
+  model_tuning_outputs[i, "mean.total.dev"] <- gbm_fit$self.statistics$mean.null
+  model_tuning_outputs[i, "mean.resid.dev"] <- gbm_fit$self.statistics$mean.resid
+  model_tuning_outputs[i, "cv.mean.dev"]    <- gbm_fit$cv.statistics$deviance.mean
+  model_tuning_outputs[i, "cv.se.dev"]      <- gbm_fit$cv.statistics$deviance.se
+  model_tuning_outputs[i, "perc.dev.expl"]  <- ((model_tuning_outputs[i, "mean.total.dev"] -
+                                                   model_tuning_outputs[i, "cv.mean.dev"]) /
+                                                  model_tuning_outputs[i, "mean.total.dev"])*100
+  model_tuning_outputs[i, "fit_success"]    <- TRUE
 }
-# Attach model statistics to data frame of tuning parameter options
-model_tuning_outputs <- cbind(tuning_parameters, model_tuning_outputs)
+
+# print or save a table of failed and successful parameter sets:
+if(length(failed_models) > 0){
+  cat("Summary: Models failed for these parameter sets:\n")
+  print(tuning_parameters[failed_models, ])
+}
+
+cat("Summary: Number of successful fits =", sum(model_tuning_outputs$fit_success), 
+    "of", nrow(model_tuning_outputs), "\n")
+
 # Write model tuning outputs table to csv file
-write.csv(model_tuning_outputs, file.path("02_calibration", paste(model, output_name,"brt_tuning_outputs.csv",sep="_")))
+write.csv(model_tuning_outputs, 
+          file.path("02_calibration", paste(model, output_name, "brt_tuning_outputs.csv", sep="_")),
+          row.names=FALSE)
 # Identify the optimal combination of model tuning parameters by identifying the model with the maximum percent deviance explained
 best <- which.max(model_tuning_outputs$perc.dev.expl)
 best
@@ -230,7 +273,7 @@ if (length(which(apply(gbm_model_simp$deviance.matrix, 1, mean) < 0)) > 0) {
 
 # Create list of indices of predictors remaining after model simplification
 if (num_predictors_dropped > 0) {
-  final_vars_ix <- gbm_model_simp$pred.list[[7]] # manually input the number of variables dropped
+  final_vars_ix <- gbm_model_simp$pred.list[[3]] # manually input the number of variables dropped
 } else {
   final_vars_ix <- which(names(data) %in% predictor_set)
 }
@@ -326,7 +369,7 @@ model_summary_df <- data.frame(model.summary.names=model_summary_names, model_su
 write.table(model_summary_df, file.path("03_model_summaries", paste(model, output_name,"brt_summary.csv",sep="_")), row.names=FALSE, col.names=FALSE, sep=",")
 
 # save workspace
-save(list=ls(all.names=TRUE), file=file.path("00_R_workspaces", paste(model, output_name,"brt_workspace.RData", sep="_")))
+save(list=ls(all.names=TRUE), file=file.path("workspaces", paste(model, output_name,"brt_workspace.RData", sep="_")))
 
 
 ##### 12/ Create spatial prediction - s0_clim0 #####

@@ -3,36 +3,58 @@ title: "Species Selection to Minimize Biomass Variability"
 author: "Julian Olaya-Restrepo"
 date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
   pdf_document:
     toc: true
     toc_depth: 3
     number_sections: true
     fig_caption: true
     keep_tex: false
-    latex_engine: pdflatex
-    citation_package: natbib
-  geometry: margin=1in
-  fontsize: 11pt
-  documentclass: article
-bibliography: references.bib
-csl: ecology.csl
+    latex_engine: xelatex
+geometry: margin=1in
+fontsize: 11pt
+documentclass: article
 ---
+# BIOMASS
 
 To reduce variability in aggregated fish biomass data for boosted regression tree modeling, we applied a multi-criteria selection framework using data from 2025 only (the year used for model training). Our objective was to identify the most stable and representative species within each taxonomic family while maintaining ecological realism and ensuring all families were adequately represented.
 
 
-# Exploratory Visualization ---------------------------------------------------
+# Exploratory Visualization ----------------------------------------------
 
 ```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = 'center',
+  fig.width = 7,
+  fig.height = 5,
+  dpi = 300,
+  out.width = '85%'
+)
+
 # Load all required packages
-library(dplyr)     # for data manipulation
-library(tidyr)     # for nest/unnest
-library(purrr)     # for map functions
-library(rvc)       # for RVC fish data tools
-library(ggplot2)   # for plotting
-library(ggrepel)   # for non-overlapping plot labels
-library(lme4)      # for mixed models
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(rvc)
+library(ggplot2)
+library(ggrepel)
+library(lme4)
+library(knitr)
+library(xtable)
+library(corrplot)
+
+# Set options
+options(scipen = 999)
 ```
+
+
+# Data Preparation
 
 ## Download Data 
 
@@ -46,9 +68,10 @@ USVI <- getRvcData(years = c(2017:2025), regions = c("STTSTJ", "STX"))
  
  https://jeremiaheb.github.io/NCRMP_R_Fish_Package/
  
-```{r pressure, echo=FALSE}
+```{r pressure}
 # 3. Group (Family) Table Construction ----------------------------------------
-species_group_list <- "Myripristis jacobus,Holocentridae
+species_group_list <- "
+Myripristis jacobus,Holocentridae
 Apogon aurolineatus,Apogonidae
 Apogon binotatus,Apogonidae
 Apogon lachneri,Apogonidae
@@ -104,44 +127,37 @@ group_df2 <- group_df %>%
 head(sp_table)
 ```
 
-## Filter information for our selected group of species 
+## Calculate Biomass Estimates
 
 
 ```{r, message=FALSE, warning=FALSE}
-# 5. Estimate Biomass at PSU Level for All Species ----------------------------
 # Calculate mean biomass per PSU per species (no group parameter, for species-level)
 gpsu_bio_species <- getPSUBiomass(
   USVI,
   species = group_df2$SPECIES_CD
 )
 
-# 6. Add Group & Environmental Data -------------------------------------------
-# Attach group and species names, for reference and aggregation
+# Add group and environmental data
 gpsu_bio_species <- gpsu_bio_species %>%
   left_join(group_df2 %>% select(SPECIES_CD, group, SPECIES), by = "SPECIES_CD")
 
-# Create a spatial/environmental lookup table (unique per PSU)
 psu_env <- USVI$sample_data %>%
   select(PRIMARY_SAMPLE_UNIT, LAT_DEGREES, LON_DEGREES, DEPTH) %>%
-  distinct(PRIMARY_SAMPLE_UNIT, .keep_all = TRUE) # ensures one row per PSU
+  distinct(PRIMARY_SAMPLE_UNIT, .keep_all = TRUE)
 
-# Join spatial/environmental info
 final_gpsu <- gpsu_bio_species %>%
-  left_join(psu_env, by = "PRIMARY_SAMPLE_UNIT")
-
-# 7. Keep and Order Only Needed Columns ---------------------------------------
-final_gpsu <- final_gpsu %>%
-  select(
-    YEAR, REGION, STRAT, PROT, PRIMARY_SAMPLE_UNIT,
-    SPECIES, SPECIES_CD, group, m, var, biomass,
-    LAT_DEGREES, LON_DEGREES, DEPTH
-  )
+  left_join(psu_env, by = "PRIMARY_SAMPLE_UNIT") %>%
+  select(YEAR, REGION, STRAT, PROT, PRIMARY_SAMPLE_UNIT,
+         SPECIES, SPECIES_CD, group, m, var, biomass,
+         LAT_DEGREES, LON_DEGREES, DEPTH)
 
 head(final_gpsu)
 ```
 
 
-# Plots -----------------------------------------------------------------------
+# Exploratory Visualization
+
+## Temporal Trends by Region
 
 ```{r, message=FALSE, warning=FALSE}
 #Summarize for Visualization (Species-Level within Groups) ----------
@@ -156,43 +172,30 @@ plot_bio <- final_gpsu %>%
 for (reg in unique(plot_bio$REGION)) {
   plot_bio_reg <- plot_bio %>% filter(REGION == reg)
   
-  # Prepare label data (last year for each group/species)
   label_data_reg <- plot_bio_reg %>%
     group_by(group, SPECIES_CD) %>%
     filter(YEAR == max(YEAR)) %>%
     ungroup()
   
   p <- ggplot(plot_bio_reg, aes(x = YEAR, y = mean_biomass, color = SPECIES_CD, group = SPECIES_CD)) +
-  geom_line() +
-  geom_point(size = 2) +
-  ggrepel::geom_text_repel(
-    data = label_data_reg,
-    aes(label = SPECIES_CD, color = SPECIES_CD),
-    nudge_x = 0.2,
-    direction = "y",
-    hjust = 0,
-    show.legend = FALSE,
-    size = 3
-  ) +
-  scale_x_continuous(breaks = c(2017, 2019, 2021, 2023, 2025)) +
-  facet_wrap(~ group, scales = "free_y") +
-  theme_classic() +
-  ylab("Biomass (kg per cylinder)") +
-  xlab("Year") +
-  ggtitle(paste("Temporal Trends in Biomass by Group and Species -", reg)) +
-  theme(
-    plot.title    = element_text(hjust = 0.5),
-    legend.position = "none",
-    axis.text.x   = element_text(angle = 45, hjust = 1, size = 12) # add this line!
-  )
+    geom_line() +
+    geom_point(size = 2) +
+    geom_text_repel(data = label_data_reg, aes(label = SPECIES_CD),
+                    nudge_x = 0.2, hjust = 0, size = 2.5, max.overlaps = 20) +
+    scale_x_continuous(breaks = c(2017, 2019, 2021, 2023, 2025)) +
+    facet_wrap(~ group, scales = "free_y") +
+    theme_classic() +
+    labs(y = "Biomass (kg per cylinder)", x = "Year",
+         title = paste("Temporal Trends -", reg)) +
+    theme(plot.title = element_text(hjust = 0.5),
+          legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1))
   
   print(p)
-  # Optionally, save:
-  # ggsave(paste0("Temporal_Trends_", reg, ".png"), plot = p, width = 10, height = 7)
 }
 ```
 
-# Year 2025 -------------------------------------------------------------------
+# 2025 Family-Level Biomass
 
 ## General plot by group
 
@@ -204,44 +207,24 @@ bar_group <- final_gpsu %>%
   group_by(REGION, group) %>%
   summarise(
     mean_biomass = mean(biomass, na.rm = TRUE),
-    se_biomass   = sd(biomass, na.rm = TRUE) / sqrt(sum(!is.na(biomass))),
-    .groups      = "drop"
-  )
-
-# For sorting and clear side-by-side plot, arrange group factor by overall mean across regions
-bar_group <- bar_group %>%
+    se_biomass = sd(biomass, na.rm = TRUE) / sqrt(sum(!is.na(biomass))),
+    .groups = "drop"
+  ) %>%
   group_by(group) %>%
-  mutate(overall_mean = mean(mean_biomass, na.rm=TRUE)) %>%
+  mutate(overall_mean = mean(mean_biomass)) %>%
   ungroup() %>%
   mutate(group = reorder(group, -overall_mean))
 
-p_bar_biomass <- ggplot(bar_group, aes(x = group, y = mean_biomass, fill = REGION)) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
-  geom_errorbar(
-    aes(ymin = mean_biomass - se_biomass, ymax = mean_biomass + se_biomass, group = REGION),
-    position = position_dodge(width = 0.8),
-    width = 0.25, size = 0.8
-  ) +
-  geom_text(
-    aes(label = round(mean_biomass, 2), group = REGION),
-    position = position_dodge(width = 0.8),
-    vjust = -0.8, size = 3
-  ) +
+ggplot(bar_group, aes(x = group, y = mean_biomass, fill = REGION)) +
+  geom_col(position = position_dodge(0.8), width = 0.7) +
+  geom_errorbar(aes(ymin = mean_biomass - se_biomass, ymax = mean_biomass + se_biomass),
+                position = position_dodge(0.8), width = 0.25) +
+  scale_fill_manual(values = c("grey60", "steelblue")) +
   theme_classic() +
-  ylab("Mean Biomass (kg per cylinder)") +
-  xlab("Family") +
-  ggtitle("Group Biomass in 2025 by Region") +
-  scale_fill_manual(values = c("grey60", "steelblue")) + # Or pick 2 colors you like
-  theme(
-    plot.title   = element_text(hjust = 0.5, size = 16),
-    axis.text.x  = element_text(angle = 45, hjust = 1, size = 12),
-    axis.text.y  = element_text(size = 14),
-    axis.title.x = element_text(size = 12, margin = margin(t = 10)),
-    axis.title.y = element_text(size = 12, margin = margin(r = 10)),
-    legend.title = element_text(size = 14),
-    legend.text  = element_text(size = 12)
-  )
-p_bar_biomass
+  labs(y = "Mean Biomass (kg per cylinder)", x = "Family",
+       title = "Family Biomass in 2025 by Region") +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 10))
 ```
 
 ```{r, message=FALSE, warning=FALSE}
@@ -249,10 +232,7 @@ p_bar_biomass
 box_data <- final_gpsu %>%
   filter(YEAR == 2025) %>%
   group_by(REGION, group, PRIMARY_SAMPLE_UNIT) %>%
-  summarise(
-    group_biomass = mean(biomass, na.rm = TRUE),
-    .groups = "drop"
-  )
+  summarise(group_biomass = mean(biomass, na.rm = TRUE), .groups = "drop")
 
 # Order groups by median biomass across all regions, for left-to-right order
 # (Same order for both regions, helps comparison)
@@ -262,34 +242,16 @@ median_group <- box_data %>%
   arrange(desc(med))
 box_data$group <- factor(box_data$group, levels = median_group$group)
 
-p_box_biomass <- ggplot(box_data, aes(x = group, y = group_biomass, fill = REGION)) +
-  geom_boxplot(
-    outlier.shape = NA, 
-    position = position_dodge(width = 0.8),
-    width = 0.6,
-    alpha = 0.7
-  ) +
-  geom_jitter(
-    aes(color = REGION),
-    size = 1.2,
-    alpha = 0.5,
-    position = position_jitterdodge(jitter.width = 0.12, dodge.width = 0.6)
-  ) +
+ggplot(box_data, aes(x = group, y = group_biomass, fill = REGION)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(0.8), width = 0.6, alpha = 0.7) +
+  geom_jitter(aes(color = REGION), size = 1, alpha = 0.5,
+              position = position_jitterdodge(jitter.width = 0.12, dodge.width = 0.8)) +
   scale_y_log10() +
-  ylab("Biomass (kg per cylinder, log10) per PSU") +
-  xlab("Family") +
-  ggtitle("Distribution of Group Biomass per PSU by Region (2025, log scale)") +
   theme_classic() +
-  theme(
-    plot.title   = element_text(hjust = 0.5, size = 12),
-    axis.text.x  = element_text(angle = 45, hjust = 1, size = 12),
-    axis.text.y  = element_text(size = 12),
-    axis.title.x = element_text(size = 12, margin = margin(t = 10)),
-    axis.title.y = element_text(size = 12, margin = margin(r = 10)),
-    legend.title = element_text(size = 14),
-    legend.text  = element_text(size = 12)
-  )
-p_box_biomass
+  labs(y = "Biomass (kg, log10) per PSU", x = "Family",
+       title = "Distribution of Family Biomass by Region (2025)") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 
@@ -301,40 +263,117 @@ box_data_species <- final_gpsu %>%
   mutate(SPECIES_CD = reorder(SPECIES_CD, -biomass, FUN = median, na.rm = TRUE)) %>%
   ungroup()
 
-p_box_biomass_sp <- ggplot(box_data_species, aes(x = SPECIES_CD, y = biomass, fill = REGION)) +
-  geom_boxplot(
-    outlier.shape = NA,
-    position = position_dodge(width = 0.75),
-    width = 0.6,
-    alpha = 0.7
-  ) +
-  geom_jitter(
-    aes(color = REGION),
-    size = 1.2,
-    alpha = 0.5,
-    position = position_jitterdodge(jitter.width = 0.10, dodge.width = 0.6)
-  ) +
+ggplot(box_data_species, aes(x = SPECIES_CD, y = biomass, fill = REGION)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(0.75), width = 0.6, alpha = 0.7) +
+  geom_jitter(aes(color = REGION), size = 0.8, alpha = 0.5,
+              position = position_jitterdodge(jitter.width = 0.10, dodge.width = 0.75)) +
   scale_y_log10() +
-  ylab("Biomass (kg per cylinder, log10)") +
-  xlab("Species") +
-  ggtitle("Distribution of Biomass by Species and Region Within Groups (2025)") +
   facet_wrap(~ group, scales = "free_x") +
   theme_classic() +
-  theme(
-    plot.title    = element_text(hjust = 0.5, size = 18),
-    strip.text    = element_text(size = 14),
-    axis.text.x   = element_text(angle = 45, hjust = 1, size = 11),
-    axis.title.x  = element_text(size = 16, margin = margin(t = 10)),
-    axis.title.y  = element_text(size = 16, margin = margin(r = 10)),
-    axis.text.y   = element_text(size = 14),
-    legend.title  = element_text(size = 13),
-    legend.text   = element_text(size = 12)
+  labs(y = "Biomass (kg, log10)", x = "Species",
+       title = "Species Biomass Distribution by Region (2025)") +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        strip.text = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+```
+
+\newpage
+
+# Model Dataset Creation
+
+```{r}
+# ============================================================================
+# TOTAL REEF FISH BIOMASS AGGREGATION - ALL SPECIES (2025)
+# ============================================================================
+
+# Aggregate biomass for ALL species to get single value per PSU
+total_biomass_2025 <- data_2025 %>%
+  group_by(PRIMARY_SAMPLE_UNIT, REGION, STRAT, PROT, 
+           LAT_DEGREES, LON_DEGREES, DEPTH) %>%
+  summarise(
+    # Total biomass in kg (sum of ALL species)
+    total_biomass_kg = sum(biomass, na.rm = TRUE),
+    
+    # Number of species present (biomass > 0)
+    n_species_present = n_distinct(SPECIES_CD[biomass > 0]),
+    
+    # Total number of species observed
+    n_species_observed = n(),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # Unit conversions
+    area_m2 = pi * (7.5^2),
+    
+    # Biomass in kg/m²
+    biomass_kg_m2 = round(total_biomass_kg / area_m2, 4),
+    
+    # Biomass in g/m²
+    biomass_g_m2 = round((total_biomass_kg / area_m2) * 1000, 2),
+    
+    # Biomass in t/km²
+    biomass_t_km2 = round((total_biomass_kg / area_m2) * 1000, 2)
+  ) %>%
+  arrange(REGION, PRIMARY_SAMPLE_UNIT)
+
+# Summary statistics
+cat("=== TOTAL BIOMASS SUMMARY (ALL SPECIES) ===\n\n")
+cat("Total stations:", nrow(total_biomass_2025), "\n")
+cat("Regions:", paste(unique(total_biomass_2025$REGION), collapse = ", "), "\n\n")
+
+# Overall summary
+overall_stats <- total_biomass_2025 %>%
+  summarise(
+    mean_biomass = round(mean(total_biomass_kg, na.rm = TRUE), 2),
+    sd_biomass = round(sd(total_biomass_kg, na.rm = TRUE), 2),
+    median_biomass = round(median(total_biomass_kg, na.rm = TRUE), 2),
+    min_biomass = round(min(total_biomass_kg, na.rm = TRUE), 2),
+    max_biomass = round(max(total_biomass_kg, na.rm = TRUE), 2),
+    mean_species = round(mean(n_species_present, na.rm = TRUE), 1)
   )
-print(p_box_biomass_sp)
+
+print(overall_stats)
+
+# By region
+cat("\n=== SUMMARY BY REGION ===\n")
+region_stats <- total_biomass_2025 %>%
+  group_by(REGION) %>%
+  summarise(
+    n_stations = n(),
+    mean_biomass = round(mean(total_biomass_kg, na.rm = TRUE), 2),
+    sd_biomass = round(sd(total_biomass_kg, na.rm = TRUE), 2),
+    median_biomass = round(median(total_biomass_kg, na.rm = TRUE), 2),
+    mean_species = round(mean(n_species_present, na.rm = TRUE), 1),
+    .groups = "drop"
+  )
+
+print(region_stats)
+
+# Export to CSV
+write.csv(total_biomass_2025, 
+          "total_reef_fish_biomass_2025.csv", 
+          row.names = FALSE)
+
+cat("\n=== DATASET EXPORTED ===\n")
+cat("File: total_reef_fish_biomass_2025.csv\n")
+cat("Rows (PSUs):", nrow(total_biomass_2025), "\n")
+cat("Columns:", ncol(total_biomass_2025), "\n\n")
+
+# Preview
+cat("=== FIRST 10 ROWS ===\n")
+total_biomass_2025 %>%
+  select(PRIMARY_SAMPLE_UNIT, REGION, total_biomass_kg, 
+         biomass_g_m2, n_species_present) %>%
+  head(10) %>%
+  print()
 ```
 
 
-# Statistical Analyses for Variance Reduction ---------------------------------
+
+\newpage
+
+# Statistical Analyses for Species variance
 
 ```{r}
 # Filter to 2025 data only
@@ -347,7 +386,7 @@ cat("Unique PSUs:", n_distinct(data_2025$PRIMARY_SAMPLE_UNIT), "\n")
 cat("Species analyzed:", n_distinct(data_2025$SPECIES_CD), "\n")
 ```
 
-## 1. Coefficient of Variation (CV) Analysis
+## Coefficient of Variation (CV) Analysis
 
 The coefficient of variation (CV = [standard deviation / mean] × 100) quantifies relative variability of biomass for each species across all sampling units. Lower CV values indicate more consistent biomass estimates, making species more suitable for predictive modeling. Species with CV >350% exhibit high spatial instability that can propagate error when biomass is aggregated to the family level.
 
@@ -363,27 +402,16 @@ species_cv <- data_2025 %>%
     cv = (sd_biomass / mean_biomass) * 100,
     n_obs = sum(!is.na(biomass)),
     .groups = "drop"
-  ) %>%
-  arrange(group, cv)
+  )
 
-# Summary statistics
-cat("\n=== COEFFICIENT OF VARIATION SUMMARY ===\n")
-summary(species_cv$cv)
-
-# Visualize CV by species
 ggplot(species_cv, aes(x = reorder(SPECIES_CD, cv), y = cv, fill = group)) +
   geom_col() +
-  geom_hline(yintercept = 350, linetype = "dashed", color = "red", size = 1) +
-  annotate("text", x = 5, y = 400, label = "CV threshold = 350%", color = "red") +
+  geom_hline(yintercept = 350, linetype = "dashed", color = "red") +
   facet_wrap(~ group, scales = "free") +
   coord_flip() +
   theme_classic() +
-  labs(title = "Coefficient of Variation by Species (2025)",
-       subtitle = "Lower values indicate more stable biomass estimates",
-       x = "Species", y = "CV (%)") +
-  theme(legend.position = "none",
-        plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10))
+  labs(y = "CV (%)", x = "Species", title = "Coefficient of Variation (2025)") +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5, face = "bold"))
 ```
 
 ## 2. Frequency of Occurrence 
@@ -399,31 +427,20 @@ species_frequency <- data_2025 %>%
     n_present = sum(biomass > 0),
     freq_occurrence = (n_present / n_obs) * 100,
     .groups = "drop"
-  ) %>%
-  arrange(group, desc(freq_occurrence))
+  )
 
-# Summary statistics
-cat("\n=== FREQUENCY OF OCCURRENCE SUMMARY ===\n")
-summary(species_frequency$freq_occurrence)
-
-# Visualize frequency
 ggplot(species_frequency, aes(x = reorder(SPECIES_CD, freq_occurrence), 
                               y = freq_occurrence, fill = group)) +
   geom_col() +
-  geom_hline(yintercept = 15, linetype = "dashed", color = "red", size = 1) +
-  annotate("text", x = 5, y = 20, label = "Frequency threshold = 15%", color = "red") +
+  geom_hline(yintercept = 15, linetype = "dashed", color = "red") +
   facet_wrap(~ group, scales = "free") +
   coord_flip() +
   theme_classic() +
-  labs(title = "Frequency of Occurrence by Species (2025)",
-       subtitle = "Percentage of sampling units where species was present",
-       x = "Species", y = "Frequency (%)") +
-  theme(legend.position = "none",
-        plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10))
+  labs(y = "Frequency (%)", x = "Species", title = "Frequency of Occurrence (2025)") +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5, face = "bold"))
 ```
 
-## 3. Contribution to Total Biomass
+## Contribution to Family Biomass
 
 Each species' proportional contribution to family-level biomass was calculated as: (mean species biomass / mean family biomass) × 100 within the 2025 dataset. This identifies dominant species that drive family-level patterns. Species contributing >30% of family biomass were considered ecologically dominant, while those contributing <10% were considered minor contributors.
 
@@ -443,18 +460,6 @@ species_contribution <- data_2025 %>%
   ungroup() %>%
   arrange(group, desc(mean_contribution))
 
-# Verify contributions sum to 100% per group
-cat("\n=== CONTRIBUTION VERIFICATION (should be ~100% per group) ===\n")
-species_contribution %>%
-  group_by(group) %>%
-  summarise(total_contrib = sum(mean_contribution)) %>%
-  print()
-
-# Summary statistics
-cat("\n=== CONTRIBUTION SUMMARY ===\n")
-summary(species_contribution$mean_contribution)
-
-# Pareto plot: cumulative contribution
 species_pareto <- species_contribution %>%
   group_by(group) %>%
   arrange(desc(mean_contribution)) %>%
@@ -463,155 +468,49 @@ species_pareto <- species_contribution %>%
 
 ggplot(species_pareto, aes(x = reorder(SPECIES_CD, -mean_contribution), 
                            y = cumulative_contrib, color = group, group = group)) +
-  geom_line(size = 1.2) +
+  geom_line(size = 1) +
   geom_point(aes(size = mean_contribution), alpha = 0.7) +
-  geom_hline(yintercept = 80, linetype = "dashed", color = "red", size = 1) +
-  annotate("text", x = 5, y = 85, label = "80% of biomass", color = "red") +
-  facet_wrap(~ group, scales = "free_x") +
+  geom_hline(yintercept = 80, linetype = "dashed", color = "red") +
+  facet_wrap(~ group, scales = "free", ncol = 3) +
   coord_flip() +
   theme_classic() +
-  labs(title = "Cumulative Biomass Contribution (2025)",
-       subtitle = "80/20 rule: few species account for most biomass",
-       x = "Species", y = "Cumulative Contribution (%)") +
-  theme(legend.position = "none",
+  labs(y = "Cumulative Contribution (%)", x = "Species", 
+       title = "Cumulative Biomass Contribution (2025)") +
+  theme(legend.position = "none", 
         plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10))
+        axis.text.y = element_text(size = 7))
 ```
 
-## 4. Correlation Analysis
+## Correlation Analysis
 
 Pairwise Pearson correlations of species biomass across sampling units identified redundant species with similar spatial patterns. Species pairs with correlation coefficients >0.7 were flagged as potentially redundant, as highly correlated species provide minimal independent information but increase model complexity.
 
 
 ```{r, message=FALSE, warning=FALSE}
-# Prepare wide format for correlation analysis
 biomass_wide <- data_2025 %>%
   select(PRIMARY_SAMPLE_UNIT, SPECIES_CD, biomass) %>%
-  pivot_wider(names_from = SPECIES_CD, 
-              values_from = biomass, 
-              values_fill = 0)
+  pivot_wider(names_from = SPECIES_CD, values_from = biomass, values_fill = 0)
 
-# Calculate correlation matrix
-species_names <- setdiff(names(biomass_wide), "PRIMARY_SAMPLE_UNIT")
-cor_matrix <- cor(biomass_wide %>% select(-PRIMARY_SAMPLE_UNIT), 
-                  use = "pairwise.complete.obs")
-
-cat("\n=== CORRELATION MATRIX SUMMARY ===\n")
-cat("Number of species:", nrow(cor_matrix), "\n")
-cat("Number of pairwise comparisons:", (nrow(cor_matrix)^2 - nrow(cor_matrix))/2, "\n")
-
-# Check for NA/NaN values
-n_na <- sum(is.na(cor_matrix))
-if(n_na > 0) {
-  cat("WARNING:", n_na, "NA values in correlation matrix\n")
-  cat("These occur when species have zero variance (constant biomass)\n\n")
-}
-
-# Identify highly correlated pairs (r > 0.7)
-high_cor_indices <- which(abs(cor_matrix) > 0.7 & cor_matrix != 1, arr.ind = TRUE)
-
-if(nrow(high_cor_indices) > 0) {
-  # Remove duplicate pairs (correlation matrix is symmetric)
-  high_cor_indices <- high_cor_indices[high_cor_indices[,1] < high_cor_indices[,2], , drop = FALSE]
-  
-  high_cor_pairs <- data.frame(
-    species1 = rownames(cor_matrix)[high_cor_indices[,1]],
-    species2 = colnames(cor_matrix)[high_cor_indices[,2]],
-    correlation = cor_matrix[high_cor_indices]
-  ) %>%
-    arrange(desc(abs(correlation)))
-  
-  cat("=== HIGHLY CORRELATED SPECIES PAIRS (|r| > 0.7) ===\n")
-  print(high_cor_pairs, row.names = FALSE)
-  cat("\nNumber of redundant pairs:", nrow(high_cor_pairs), "\n")
-} else {
-  cat("No species pairs with |r| > 0.7 detected\n")
-  cat("This suggests species have distinct spatial patterns\n")
-}
-
-# Clean correlation matrix for plotting (replace NA with 0)
+cor_matrix <- cor(biomass_wide %>% select(-PRIMARY_SAMPLE_UNIT), use = "pairwise.complete.obs")
 cor_matrix_clean <- cor_matrix
 cor_matrix_clean[is.na(cor_matrix_clean)] <- 0
 
-# Visualize correlation matrix with corrplot
 corrplot(cor_matrix_clean, 
          method = "circle", 
          type = "upper",
-         order = "original",  # Changed from "hclust" to avoid error
-         tl.cex = 0.6, 
+         order = "original",
+         tl.cex = 0.5, 
          tl.col = "black",
-         tl.srt = 45,
          col = colorRampPalette(c("#6D9EC1", "white", "#E46726"))(200),
-         title = "Species Biomass Correlation Matrix (2025)",
-         mar = c(0,0,2,0),
-         na.label = "square",
-         na.label.col = "gray90",
+         title = "Species Correlation Matrix (2025)",
+         mar = c(0,0,1,0),
          diag = FALSE)
-
-# Alternative: Only plot species with valid correlations
-valid_species <- apply(cor_matrix, 1, function(x) sum(is.na(x)) == 0)
-if(sum(valid_species) > 1) {
-  cor_matrix_valid <- cor_matrix[valid_species, valid_species]
-  
-  # Try hierarchical clustering only if no NAs
-  if(sum(is.na(cor_matrix_valid)) == 0) {
-    library(pheatmap)
-    
-    pheatmap(cor_matrix_valid,
-             clustering_distance_rows = "euclidean",
-             clustering_distance_cols = "euclidean",
-             clustering_method = "complete",
-             color = colorRampPalette(c("#6D9EC1", "white", "#E46726"))(100),
-             border_color = NA,
-             fontsize = 8,
-             main = "Hierarchical Clustering of Species by Biomass Correlation (2025)",
-             display_numbers = FALSE,
-             angle_col = 45)
-  } else {
-    cat("\nSkipping hierarchical clustering due to NA values in correlation matrix\n")
-  }
-}
-
-# Distribution of correlation coefficients (excluding NA)
-cor_vector <- cor_matrix[upper.tri(cor_matrix)]
-cor_vector <- cor_vector[!is.na(cor_vector)]
-
-if(length(cor_vector) > 0) {
-  cat("\n=== CORRELATION DISTRIBUTION ===\n")
-  summary(cor_vector)
-  
-  hist(cor_vector, 
-       breaks = 30, 
-       main = "Distribution of Pairwise Species Correlations (2025)",
-       xlab = "Pearson Correlation Coefficient",
-       ylab = "Frequency",
-       col = "steelblue",
-       border = "white")
-  abline(v = 0.7, col = "red", lwd = 2, lty = 2)
-  abline(v = -0.7, col = "red", lwd = 2, lty = 2)
-  abline(v = 0, col = "gray30", lwd = 1, lty = 1)
-  legend("topright", 
-         legend = c("r = ±0.7 threshold", "No correlation"),
-         col = c("red", "gray30"),
-         lty = c(2, 1),
-         lwd = c(2, 1))
-}
-
-# Identify species with most correlations > 0.5 (moderately correlated)
-if(sum(!is.na(cor_matrix)) > 0) {
-  cor_counts <- apply(cor_matrix, 1, function(x) {
-    sum(abs(x) > 0.5 & abs(x) < 1, na.rm = TRUE)
-  })
-  
-  cat("\n=== SPECIES WITH MOST MODERATE CORRELATIONS (|r| > 0.5) ===\n")
-  sort(cor_counts, decreasing = TRUE)[1:10] %>% print()
-}
 ```
 Correlation analysis revealed no species pairs with correlation coefficients exceeding |r| = 0.7, indicating that species exhibit largely independent spatial patterns across the study area. A total of 231 pairwise comparisons (29.6%) resulted in undefined correlations due to species having zero variance (constant or absent across all sites), further confirming the presence of hyper-rare, uninformative species in the dataset. Only two species (*Stegastes partitus* and *Thalassoma bifasciatum*) showed moderate correlation (|r| > 0.5) with other species, both of which were retained in the final selection due to their high quality metrics. The lack of strong inter-species correlations confirmed that removing low-quality species based on variability criteria would not result in loss of independent spatial information.
 
 
 
-## 5. Zero-Inflation Analysis
+## Zero-Inflation Analysis
 
 The proportion of zero observations (absence records) was calculated for each species. High zero-inflation (>80%) indicates rare or highly patchy distributions that inflate variance and complicate statistical modeling. Zero-inflated species often require specialized models and may not aggregate well with continuously present species.
 
@@ -625,173 +524,95 @@ zero_inflation <- data_2025 %>%
     prop_zeros = (n_zeros / n_obs) * 100,
     mean_when_present = mean(biomass[biomass > 0], na.rm = TRUE),
     .groups = "drop"
-  ) %>%
-  arrange(group, prop_zeros)
+  )
 
-# Summary statistics
-cat("\n=== ZERO-INFLATION SUMMARY ===\n")
-summary(zero_inflation$prop_zeros)
-
-# Plot: Zero-inflation vs biomass when present
 ggplot(zero_inflation, aes(x = prop_zeros, y = mean_when_present, 
                            color = group, label = SPECIES_CD)) +
   geom_point(size = 3, alpha = 0.7) +
-  geom_vline(xintercept = 80, linetype = "dashed", color = "red", size = 1) +
-  annotate("text", x = 75, y = max(zero_inflation$mean_when_present, na.rm = TRUE), 
-           label = "80% zeros threshold", color = "red", angle = 90, vjust = -0.5) +
-  geom_text_repel(size = 2.5, max.overlaps = 20) +
+  geom_vline(xintercept = 80, linetype = "dashed", color = "red") +
+  geom_text_repel(size = 2, max.overlaps = 15) +
   scale_y_log10() +
   theme_classic() +
-  labs(title = "Zero-Inflation vs Mean Biomass When Present (2025)",
-       subtitle = "Species in upper-left are rare but important when present",
-       x = "% Zeros (absence)", 
-       y = "Mean Biomass When Present (kg, log10)") +
-  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10),
-        legend.position = "bottom")
+  labs(x = "% Zeros", y = "Mean Biomass When Present (kg, log10)",
+       title = "Zero-Inflation Analysis (2025)") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "bottom")
 ```
 
-## 6. Taylor's Power Law
+## Taylor's Power Law
 
 We examined the mean-variance relationship following Taylor's Power Law: log(variance) = log(a) + b × log(mean). The slope parameter (b) indicates spatial aggregation patterns, where b ≈ 2 suggests random distribution, b > 2 indicates patchy/aggregated distribution, and b < 2 suggests regular spacing. Species deviating strongly from this relationship represent outliers in their distributional ecology.
 
 ```{r, message=FALSE, warning=FALSE}
 # Combine mean and variance data
 taylor_data <- species_cv %>%
-  select(group, SPECIES_CD, SPECIES, mean_biomass, sd_biomass) %>%
   mutate(
     variance = sd_biomass^2,
-    log_mean = log10(mean_biomass + 0.001),  # Add small constant to avoid log(0)
+    log_mean = log10(mean_biomass + 0.001),
     log_var = log10(variance + 0.001)
   ) %>%
   filter(is.finite(log_mean) & is.finite(log_var))
 
-# Fit Taylor's Power Law: log(variance) = log(a) + b * log(mean)
 taylor_model <- lm(log_var ~ log_mean, data = taylor_data)
-
-cat("\n=== TAYLOR'S POWER LAW ===\n")
-cat("Model: log(variance) = a + b * log(mean)\n\n")
-summary(taylor_model)
-
-# Extract slope (b)
 slope <- coef(taylor_model)[2]
-intercept <- coef(taylor_model)[1]
+r_squared <- summary(taylor_model)$r.squared
 
-cat("\nInterpretation of slope (b =", round(slope, 2), "):\n")
-if(slope < 1.8) {
-  cat("  b < 2: Species tend toward regular spacing\n")
-} else if(slope > 2.2) {
-  cat("  b > 2: Species are aggregated/patchy\n")
-} else {
-  cat("  b ≈ 2: Species show random spatial distribution\n")
-}
-
-# Visualize Taylor's Power Law
 ggplot(taylor_data, aes(x = log_mean, y = log_var, color = group, label = SPECIES_CD)) +
   geom_point(size = 3, alpha = 0.7) +
   geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
-  geom_text_repel(size = 2.5, max.overlaps = 15) +
+  geom_text_repel(size = 2, max.overlaps = 10) +
   annotate("text", 
-           x = min(taylor_data$log_mean, na.rm = TRUE) + 0.5,
+           x = min(taylor_data$log_mean, na.rm = TRUE) + 0.5, 
            y = max(taylor_data$log_var, na.rm = TRUE) - 0.5,
            label = paste0("slope = ", round(slope, 2), 
-                         "\nR² = ", round(summary(taylor_model)$r.squared, 3)),
+                         "\nR-squared = ", round(r_squared, 3)),
            hjust = 0, size = 4, fontface = "bold") +
   theme_classic() +
-  labs(title = "Taylor's Power Law: Mean-Variance Relationship (2025)",
-       subtitle = "Species above the line are more variable than expected",
-       x = "log10(Mean Biomass)",
-       y = "log10(Variance)") +
+  labs(x = "log10(Mean Biomass)", y = "log10(Variance)",
+       title = "Taylor's Power Law (2025)",
+       subtitle = "Species above the line are more variable than expected") +
   theme(plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10),
+        plot.subtitle = element_text(hjust = 0.5, size = 9),
         legend.position = "bottom")
 
-# Identify outliers (residuals > 2 SD)
-taylor_data <- taylor_data %>%
-  mutate(
-    fitted = predict(taylor_model),
-    residuals = log_var - fitted,
-    outlier = abs(residuals) > 2 * sd(residuals)
-  )
-
-cat("\n=== SPECIES DEVIATING FROM MEAN-VARIANCE RELATIONSHIP ===\n")
-cat("(Residuals > 2 SD - higher variance than expected)\n\n")
-taylor_data %>%
-  filter(outlier) %>%
-  select(group, SPECIES, mean_biomass, variance, residuals) %>%
-  arrange(desc(residuals)) %>%
-  print()
 ```
 
-# Decision Framework ---------------------------------------------------------
+\newpage
+
+# Species Selection Strategy
 
 ## Integrate All Metrics
 
 ```{r}
-# Combine all metrics into single dataframe
 species_metrics <- species_cv %>%
-  left_join(species_frequency %>% select(SPECIES_CD, freq_occurrence), 
-            by = "SPECIES_CD") %>%
-  left_join(species_contribution %>% select(SPECIES_CD, mean_contribution), 
-            by = "SPECIES_CD") %>%
-  left_join(zero_inflation %>% select(SPECIES_CD, prop_zeros), 
-            by = "SPECIES_CD")
-
-# Calculate composite selection score
-species_metrics <- species_metrics %>%
+  left_join(species_frequency %>% select(SPECIES_CD, freq_occurrence), by = "SPECIES_CD") %>%
+  left_join(species_contribution %>% select(SPECIES_CD, mean_contribution), by = "SPECIES_CD") %>%
+  left_join(zero_inflation %>% select(SPECIES_CD, prop_zeros), by = "SPECIES_CD") %>%
   mutate(
     selection_score = 
-      (100 - pmin(cv, 500)) * 0.30 +      # Cap CV at 500 for scoring
+      (100 - pmin(cv, 500)) * 0.30 +
       freq_occurrence * 0.25 +
       mean_contribution * 0.25 +
       (100 - prop_zeros) * 0.20
-  ) %>%
-  arrange(group, desc(selection_score))
-
-cat("\n=== INTEGRATED SPECIES METRICS SUMMARY ===\n")
-summary(species_metrics %>% select(cv, freq_occurrence, mean_contribution, prop_zeros, selection_score))
-
-# Display top 20 species by selection score
-cat("\n=== TOP 20 SPECIES BY SELECTION SCORE ===\n")
-species_metrics %>% 
-  arrange(desc(selection_score)) %>% 
-  head(20) %>%
-  select(group, SPECIES, cv, freq_occurrence, mean_contribution, prop_zeros, selection_score) %>%
-  print(n = 20)
+  )
 ```
 
 ## Three-Tier Selection Strategy
 
 ```{r}
-# Tier 1: High quality species
+# Tier 1: High quality
 tier1 <- species_metrics %>%
-  filter(
-    !is.na(cv),
-    cv < 350,
-    freq_occurrence > 15,
-    mean_contribution > 10,
-    prop_zeros < 80
-  ) %>%
+  filter(!is.na(cv), cv < 350, freq_occurrence > 15, 
+         mean_contribution > 10, prop_zeros < 80) %>%
   mutate(selection_method = "High quality")
 
-cat("\n=== TIER 1: HIGH QUALITY SPECIES ===\n")
-cat("Criteria: CV < 350, Frequency > 15%, Contribution > 10%, Zeros < 80%\n")
-cat("Species selected:", nrow(tier1), "\n\n")
-print(tier1 %>% select(group, SPECIES, cv, freq_occurrence, mean_contribution))
-
-# Tier 2: Dominant species (>30% of family biomass)
+# Tier 2: Dominant
 tier2 <- species_metrics %>%
   filter(!is.na(cv)) %>%
   anti_join(tier1, by = "SPECIES_CD") %>%
   filter(mean_contribution > 30) %>%
   mutate(selection_method = "Dominant")
 
-cat("\n=== TIER 2: DOMINANT SPECIES ===\n")
-cat("Criteria: Contribution > 30% (regardless of other metrics)\n")
-cat("Species selected:", nrow(tier2), "\n\n")
-print(tier2 %>% select(group, SPECIES, cv, freq_occurrence, mean_contribution))
-
-# Tier 3: Best available per family
+# Tier 3: Best available
 tier3 <- species_metrics %>%
   filter(!is.na(cv)) %>%
   anti_join(bind_rows(tier1, tier2), by = "SPECIES_CD") %>%
@@ -800,190 +621,75 @@ tier3 <- species_metrics %>%
   ungroup() %>%
   mutate(selection_method = "Best available")
 
-cat("\n=== TIER 3: BEST AVAILABLE (family representatives) ===\n")
-cat("Criteria: Highest selection score among remaining species per family\n")
-cat("Species selected:", nrow(tier3), "\n\n")
-print(tier3 %>% select(group, SPECIES, cv, freq_occurrence, mean_contribution))
-
-# Combine all tiers
-preliminary_selection <- bind_rows(tier1, tier2, tier3) %>%
-  arrange(group, desc(selection_score))
-
-cat("\n=== PRELIMINARY SELECTION SUMMARY ===\n")
-cat("Total species:", nrow(preliminary_selection), "\n")
-cat("Families represented:", n_distinct(preliminary_selection$group), "/", 
-    n_distinct(species_metrics$group), "\n\n")
-
-preliminary_selection %>%
-  group_by(selection_method) %>%
-  summarise(
-    n_species = n(),
-    mean_cv = mean(cv, na.rm = TRUE),
-    mean_freq = mean(freq_occurrence),
-    mean_contrib = mean(mean_contribution),
-    mean_zeros = mean(prop_zeros)
-  ) %>%
-  print()
+# Combine and remove hyper-rare Apogonids
+final_selection <- bind_rows(tier1, tier2, tier3) %>%
+  filter(!(SPECIES %in% c("Apogon binotatus", "Apogon quadrisquamatus")))
+final_selection
 ```
 
-### Remove Hyper-Rare Apogonids
+Final Selection: 24 species across 11 families were selected:
 
-```{r, message=FALSE, warning=FALSE}
-# Identify problematic Apogonids
-problematic_apogonids <- preliminary_selection %>%
-  filter(
-    group == "Apogonidae",
-    selection_method == "Dominant",
-    cv > 2000 | freq_occurrence < 2
-  )
-
-cat("\n=== PROBLEMATIC SPECIES IDENTIFIED FOR REMOVAL ===\n")
-cat("Criteria: Apogonidae with CV > 2000% or Frequency < 2%\n\n")
-print(problematic_apogonids %>% 
-        select(SPECIES, cv, freq_occurrence, mean_contribution, prop_zeros))
-
-# Final selection: Remove hyper-rare Apogonids
-final_selection <- preliminary_selection %>%
-  filter(
-    !(SPECIES %in% c("Apogon binotatus", "Apogon quadrisquamatus"))
-  )
-
-cat("\n\n=== FINAL SPECIES SELECTION (OPTION 2: MODERATE) ===\n")
-cat("Total species selected:", nrow(final_selection), "\n")
-cat("Families represented:", n_distinct(final_selection$group), "\n")
-cat("Species removed: 2 hyper-rare Apogonids\n\n")
-
-# Final summary by tier
-final_selection %>%
-  group_by(selection_method) %>%
-  summarise(
-    n_species = n(),
-    mean_cv = round(mean(cv, na.rm = TRUE), 1),
-    mean_freq = round(mean(freq_occurrence), 1),
-    mean_contrib = round(mean(mean_contribution), 1),
-    mean_zeros = round(mean(prop_zeros), 1)
-  ) %>%
-  print()
-
-# Complete final list
-cat("\n=== COMPLETE FINAL SPECIES LIST ===\n")
-final_selection %>%
-  select(group, SPECIES, selection_method, cv, freq_occurrence, 
-         mean_contribution, prop_zeros, selection_score) %>%
-  arrange(selection_method, group, desc(selection_score)) %>%
-  print(n = Inf)
-
-# Export final selection
-write.csv(final_selection, 
-          "final_selected_species_2025.csv", 
-          row.names = FALSE)
-
-cat("\nFinal species list exported to: final_selected_species_2025.csv\n")
-```
+- Tier 1 (High Quality, n=16): Mean CV = 201%, mean frequency = 62%
+- Tier 2 (Dominant, n=1): Lutjanus apodus (74% of family biomass)
+- Tier 3 (Best Available, n=7): Representatives for remaining families
+Two hyper-rare Apogonids (CV >2000%, <2% occurrence) were excluded.
 
 
 ## Variance Reduction Validation
 
-```{r}
-cat("\n=== VARIANCE REDUCTION VALIDATION ===\n\n")
-
-# Get selected species codes
+```{r, message=FALSE, warning=FALSE}
 selected_species_codes <- final_selection$SPECIES_CD
 
-# 1. Calculate family-level biomass with ALL species
 all_species_biomass <- data_2025 %>%
-  group_by(PRIMARY_SAMPLE_UNIT, group, REGION, STRAT, PROT, 
-           LAT_DEGREES, LON_DEGREES, DEPTH) %>%
-  summarise(
-    family_biomass = sum(biomass, na.rm = TRUE),
-    n_species_present = n_distinct(SPECIES_CD[biomass > 0]),
-    .groups = "drop"
-  ) %>%
+  group_by(PRIMARY_SAMPLE_UNIT, group, REGION) %>%
+  summarise(family_biomass = sum(biomass, na.rm = TRUE), .groups = "drop") %>%
   mutate(dataset = "All species (n=40)")
 
-# 2. Calculate family-level biomass with SELECTED species only
 selected_species_biomass <- data_2025 %>%
   filter(SPECIES_CD %in% selected_species_codes) %>%
-  group_by(PRIMARY_SAMPLE_UNIT, group, REGION, STRAT, PROT, 
-           LAT_DEGREES, LON_DEGREES, DEPTH) %>%
-  summarise(
-    family_biomass = sum(biomass, na.rm = TRUE),
-    n_species_present = n_distinct(SPECIES_CD[biomass > 0]),
-    .groups = "drop"
-  ) %>%
+  group_by(PRIMARY_SAMPLE_UNIT, group, REGION) %>%
+  summarise(family_biomass = sum(biomass, na.rm = TRUE), .groups = "drop") %>%
   mutate(dataset = "Selected species (n=24)")
 
-# Combine datasets
 comparison_data <- bind_rows(all_species_biomass, selected_species_biomass)
 
-# Calculate summary statistics by family and dataset
 variance_comparison <- comparison_data %>%
   group_by(group, dataset) %>%
   summarise(
-    n_sites = n(),
     mean_biomass = mean(family_biomass, na.rm = TRUE),
     sd_biomass = sd(family_biomass, na.rm = TRUE),
     cv = (sd_biomass / mean_biomass) * 100,
-    median_biomass = median(family_biomass, na.rm = TRUE),
-    prop_zeros = sum(family_biomass == 0) / n() * 100,
     .groups = "drop"
   )
 
-# Calculate variance reduction
 variance_reduction <- variance_comparison %>%
   select(group, dataset, cv, sd_biomass) %>%
-  pivot_wider(names_from = dataset, 
-              values_from = c(cv, sd_biomass)) %>%
-  mutate(
-    cv_reduction_pct = ((`cv_All species (n=40)` - `cv_Selected species (n=24)`) / 
-                          `cv_All species (n=40)`) * 100,
-    sd_reduction_pct = ((`sd_biomass_All species (n=40)` - `sd_biomass_Selected species (n=24)`) / 
-                          `sd_biomass_All species (n=40)`) * 100
-  )
+  pivot_wider(names_from = dataset, values_from = c(cv, sd_biomass)) %>%
+  mutate(cv_reduction_pct = ((`cv_All species (n=40)` - `cv_Selected species (n=24)`) / 
+                              `cv_All species (n=40)`) * 100)
 
-cat("=== VARIANCE REDUCTION BY FAMILY ===\n\n")
-variance_reduction %>%
-  select(group, `cv_All species (n=40)`, `cv_Selected species (n=24)`, 
-         cv_reduction_pct) %>%
-  arrange(desc(cv_reduction_pct)) %>%
-  print(n = Inf)
-
-cat("\n=== OVERALL VARIANCE REDUCTION ===\n")
-overall_reduction <- variance_comparison %>%
-  group_by(dataset) %>%
+biomass_retention <- comparison_data %>%
+  select(PRIMARY_SAMPLE_UNIT, group, dataset, family_biomass) %>%
+  pivot_wider(names_from = dataset, values_from = family_biomass) %>%
+  group_by(group) %>%
   summarise(
-    mean_cv = mean(cv, na.rm = TRUE),
-    median_cv = median(cv, na.rm = TRUE),
-    mean_sd = mean(sd_biomass, na.rm = TRUE)
-  )
-print(overall_reduction)
-
-overall_improvement <- overall_reduction %>%
-  summarise(
-    cv_reduction = (mean_cv[1] - mean_cv[2]) / mean_cv[1] * 100,
-    sd_reduction = (mean_sd[1] - mean_sd[2]) / mean_sd[1] * 100
+    total_biomass_all = sum(`All species (n=40)`, na.rm = TRUE),
+    total_biomass_selected = sum(`Selected species (n=24)`, na.rm = TRUE),
+    biomass_retained_pct = (total_biomass_selected / total_biomass_all) * 100,
+    .groups = "drop"
   )
 
-cat("\nMean CV reduction:", round(overall_improvement$cv_reduction, 1), "%\n")
-cat("Mean SD reduction:", round(overall_improvement$sd_reduction, 1), "%\n")
-
-# Visualize variance comparison
 ggplot(variance_comparison, aes(x = reorder(group, -cv), y = cv, fill = dataset)) +
   geom_col(position = "dodge") +
   coord_flip() +
   theme_classic() +
-  labs(title = "Coefficient of Variation: All vs Selected Species",
-       subtitle = "Lower CV indicates reduced variability in family biomass estimates",
-       x = "Family",
-       y = "CV (%)",
+  labs(x = "Family", y = "CV (%)", title = "CV: All vs Selected Species",
        fill = "Dataset") +
-  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10),
-        legend.position = "bottom") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "bottom") +
   scale_fill_manual(values = c("All species (n=40)" = "#E69F00", 
                                 "Selected species (n=24)" = "#56B4E9"))
-
-# Biomass comparison scatter plot
+```
+```{r}
 biomass_comparison_wide <- comparison_data %>%
   select(PRIMARY_SAMPLE_UNIT, group, dataset, family_biomass) %>%
   pivot_wider(names_from = dataset, values_from = family_biomass)
@@ -994,179 +700,239 @@ ggplot(biomass_comparison_wide,
   geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
   facet_wrap(~ group, scales = "free") +
   theme_classic() +
-  labs(title = "Family Biomass: All Species vs Selected Species",
-       subtitle = "Points near the 1:1 line indicate biomass is preserved",
-       x = "Biomass - All Species (kg)",
-       y = "Biomass - Selected Species (kg)") +
-  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10))
-
-# Calculate biomass retention (how much biomass is preserved)
-biomass_retention <- comparison_data %>%
-  select(PRIMARY_SAMPLE_UNIT, group, dataset, family_biomass) %>%
-  pivot_wider(names_from = dataset, values_from = family_biomass) %>%
-  group_by(group) %>%
-  summarise(
-    total_biomass_all = sum(`All species (n=40)`, na.rm = TRUE),
-    total_biomass_selected = sum(`Selected species (n=24)`, na.rm = TRUE),
-    biomass_retained_pct = (total_biomass_selected / total_biomass_all) * 100,
-    .groups = "drop"
-  ) %>%
-  arrange(desc(biomass_retained_pct))
-
-cat("\n=== BIOMASS RETENTION BY FAMILY ===\n")
-cat("(% of total biomass retained after species selection)\n\n")
-print(biomass_retention, n = Inf)
-
-cat("\nOverall biomass retention:", 
-    round(sum(biomass_retention$total_biomass_selected) / 
-            sum(biomass_retention$total_biomass_all) * 100, 1), "%\n")
-
-# Summary table for publication
-summary_table <- variance_reduction %>%
-  left_join(biomass_retention, by = "group") %>%
-  select(group, 
-         cv_all = `cv_All species (n=40)`, 
-         cv_selected = `cv_Selected species (n=24)`,
-         cv_reduction_pct,
-         biomass_retained_pct) %>%
-  arrange(desc(cv_reduction_pct))
-
-cat("\n=== FINAL SUMMARY TABLE ===\n")
-print(summary_table, n = Inf)
-
-# Export summary
-write.csv(summary_table, 
-          "variance_reduction_summary_2025.csv", 
-          row.names = FALSE)
-
-cat("\nVariance reduction summary exported to: variance_reduction_summary_2025.csv\n")
+  labs(x = "Biomass - All Species (kg)", y = "Biomass - Selected Species (kg)",
+       title = "Family Biomass: All vs Selected Species") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
 ```
+Variance Reduction Results:
+
+Mean CV reduction: 7.5% (317% → 294%)
+Overall biomass retention: 96.2%
+Families improved: Apogonidae (21% CV reduction)
+Families with slight CV increases: 4 families (+0.4% to +7.8%), all retaining >86% biomass
+
+\newpage
+
+# Results Summary
 
 ## Species Selection and Variance Reduction -----------------------------------
 
-**Taylor's Power Law and Spatial Distribution Patterns**
+Analysis of 40 candidate species using Taylor's Power Law (R² = 0.83, slope = 0.92) revealed regular spatial spacing patterns typical of territorial reef fishes. Species exhibited high natural variability (median CV = 322%) and zero-inflation (median 70% zeros), confirming inherent patchiness.
 
-Analysis of the mean-variance relationship across all 40 species revealed a significant adherence to Taylor's Power Law (R² = 0.83, F₁,₃₈ = 184.6, p < 0.001). The estimated slope (b = 0.92, SE = 0.067) was significantly less than 2, indicating that reef fish species in this assemblage tend toward regular spacing rather than aggregated distributions. This relatively low slope suggests lower spatial variance than expected under random distribution, potentially reflecting territorial behaviors or competitive interactions that promote spatial regularity. One species, Lutjanus apodus (schoolmaster snapper), exhibited significantly higher variance than predicted by the mean-variance relationship (residual > 2 SD), indicating unusually high spatial patchiness relative to its mean biomass.
+The three-tier selection strategy identified 24 species:
 
-**Integrated Species Metrics**
+**Tier 1 (High Quality, n=16):** Including Sparisoma aurofrenatum (CV=111%), Thalassoma bifasciatum (CV=137%), Halichoeres garnoti (CV=143%), and Stegastes partitus (CV=195%). These species provide stable biomass estimates (mean CV=201%, mean frequency=62%, mean contribution=51%).
 
-The 40 candidate species exhibited substantial variation in all metrics (Table X). Coefficient of variation ranged from 111% to 2,579% (median = 322%), reflecting the naturally patchy distribution of reef fishes. Frequency of occurrence ranged from 0% to 95% (median = 30%), with many species present at fewer than one-third of sampling sites. Species contributions to family biomass ranged from effectively zero to 100% (median = 14.6%), indicating that most families were dominated by a few key species. Zero-inflation was high across the assemblage (median = 70% zeros), confirming that most species were absent from most sites. The composite selection score, integrating all metrics, ranged from -120 to +47, with only the upper quartile of species achieving positive scores.
+**Tier 2 (Dominant, n=1):** Lutjanus apodus contributes 74% of Lutjanidae biomass despite moderate variability (CV=394%).
 
-Correlation analysis revealed independent spatial patterns among species, with no species pairs exhibiting correlations exceeding |r| = 0.7. However, 29.6% of pairwise correlations were undefined due to species having zero variance (constant absence or presence at identical biomass levels), confirming the prevalence of hyper-rare, uninformative species in the initial dataset.
+**Tier 3 (Best Available, n=7):** Representatives ensuring complete family coverage, including Apogon maculatus, Chaetodon ocellatus, and Coryphopterus glaucofraenum.
 
-**Three-Tier Species Selection**
+Two hyper-rare Apogonids (*A. binotatus*, *A. quadrisquamatus*) with CV >2000% and <2% occurrence were excluded.
 
-Tier 1 (High Quality Species, n = 16): Sixteen species met all stringent criteria (CV < 350%, frequency > 15%, contribution > 10%, zeros < 80%). These species exhibited exceptional stability (mean CV = 201%), high detection rates (mean frequency = 62%), and substantial ecological importance (mean contribution = 51% of family biomass). This tier included ecologically dominant Caribbean reef species such as the parrotfishes Sparisoma aurofrenatum (redband parrotfish, CV = 111%) and Sparisoma viride (stoplight parrotfish, CV = 156%), the wrasses Thalassoma bifasciatum (bluehead wrasse, CV = 137%) and Halichoeres garnoti (yellowhead wrasse, CV = 143%), and the damselfish Stegastes partitus (bicolor damselfish, CV = 195%). These species represented the modeling core, providing stable, predictable biomass estimates across the study area.
+Species selection achieved 7.5% CV reduction while retaining 96.2% of total biomass. The modest variance reduction reflects intrinsic reef fish patchiness rather than selection failure. No species pairs showed r >0.7, confirming independent spatial information. The final selection balances ecological representativeness, statistical stability, and model parsimony.
 
-Tier 2 (Dominant Species, n = 1): One species, Lutjanus apodus (schoolmaster snapper), contributed >30% of family biomass (74%) despite moderate variability (CV = 394%) and intermediate occurrence (26% of sites). This species was retained due to its overwhelming dominance of Lutjanidae biomass, ensuring the family's ecological importance was adequately represented despite spatial patchiness.
+## Summary Table
 
-Tier 3 (Best Available Representatives, n = 7): Seven families lacking Tier 1 or 2 representatives were represented by their single highest-scoring species. These included Apogon maculatus (flamefish, Apogonidae), Chaetodon ocellatus (spotfin butterflyfish, Chaetodontidae), Coryphopterus glaucofraenum (bridled goby, Gobiidae), Myripristis jacobus (blackbar soldierfish, Holocentridae), Halichoeres maculipinna (clown wrasse, Labridae), Lutjanus mahogoni (mahogany snapper, Lutjanidae), and Stegastes adustus (dusky damselfish, Pomacentridae). Although these species exhibited higher variability (mean CV = 598%) and lower occurrence (mean frequency = 20%), they ensured complete taxonomic coverage across all 11 families.
-
-Exclusion of Hyper-Rare Apogonids: Two extremely rare Apogonidae species (Apogon binotatus and A. quadrisquamatus) initially selected as Tier 2 dominants were excluded from the final list due to prohibitive instability (CV > 2,000%) and near-complete absence (occurrence < 2%, >98% zeros). Their removal reduced Apogonidae representation to a single species but eliminated species contributing more variance than information.
-
-**Final Selection and Variance Reduction**
-The final selection comprised 24 species across 11 families, down from the initial 40 species. Species selection achieved an overall 7.5% reduction in mean coefficient of variation (from 317% to 294%) and a 2.8% reduction in mean standard deviation while retaining 96.2% of total biomass (Table X).
-
-Variance reduction was highly variable among families. The most substantial improvement occurred in Apogonidae (21% CV reduction) following removal of the two hyper-rare species. Seven families (Epinephelidae, Gobiidae, Haemulidae, Holocentridae, Scaridae, Tetraodontidae) exhibited no change in CV because all species were retained (single-species families or all species meeting criteria). Conversely, four families showed slight CV increases: Chaetodontidae (+0.4%), Labridae (+2.7%), Pomacentridae (+7.6%), and Lutjanidae (+7.8%). These increases occurred because removed species, despite high variability, occasionally contributed biomass that dampened family-level variance when aggregated. However, all four families retained >86% of total biomass, and the trade-off between modest CV increases and improved model parsimony (removing 16 species) was deemed acceptable.
-
-The modest overall variance reduction (7.5%) reflects the biological reality that retained species themselves exhibit high natural variability (median CV = 293%). This indicates that reef fish patchiness is not primarily driven by rare, erratic species but is an inherent property of the assemblage. The species selection process successfully eliminated uninformative species while preserving ecological information, as evidenced by near-complete biomass retention (96.2%).
-
-**Interpretation**
-The final 24-species selection balances ecological representativeness, statistical stability, and model parsimony. High-quality species (n = 16) provide the stable foundation for spatial prediction, while dominant and representative species (n = 8) ensure no family is ecologically misrepresented. The lack of strong inter-species correlations (maximum |r| < 0.7) confirms that each retained species contributes independent spatial information to family-level biomass estimates.
-
-The limited variance reduction achieved (7.5%) should not be interpreted as selection failure. Rather, it demonstrates that the majority of spatial variability is intrinsic to reef fish ecology, not an artifact of including rare species. Caribbean reef fish assemblages are naturally patchy due to habitat heterogeneity, behavioral territoriality (evidenced by Taylor's slope < 2), and recruitment variability. The species selection process successfully identified this intrinsic variability and removed only those species contributing disproportionate noise (231 undefined correlations, >98% zeros) while preserving the ecological signal (96% biomass retention).
-
-## Table
-```{r, results='asis'}
-# Load packages
+```{r}
 library(knitr)
-library(kableExtra)
-library(dplyr)
-library(tibble)
 
-# First, verify the input data exists
-cat("Checking data objects...\n")
-cat("variance_reduction rows:", nrow(variance_reduction), "\n")
-cat("biomass_retention rows:", nrow(biomass_retention), "\n")
-
-# Prepare publication table data
 pub_table <- variance_reduction %>%
-  left_join(biomass_retention %>% select(group, biomass_retained_pct), 
-            by = "group") %>%
-  left_join(
-    species_metrics %>% 
-      count(group, name = "n_total"),
-    by = "group"
-  ) %>%
-  left_join(
-    final_selection %>% 
-      count(group, name = "n_selected"),
-    by = "group"
-  ) %>%
-  mutate(
-    species_counts = paste0(n_total, "/", n_selected),
-    cv_all = round(`cv_All species (n=40)`, 1),
-    cv_selected = round(`cv_Selected species (n=24)`, 1),
-    cv_reduction = round(cv_reduction_pct, 1),
-    biomass_retained = round(biomass_retained_pct, 1)
-  ) %>%
-  select(
+  left_join(biomass_retention %>% select(group, biomass_retained_pct), by = "group") %>%
+  left_join(species_metrics %>% count(group, name = "n_total"), by = "group") %>%
+  left_join(final_selection %>% count(group, name = "n_selected"), by = "group") %>%
+  transmute(
     Family = group,
-    `Species (all/selected)` = species_counts,
-    `CV All (%)` = cv_all,
-    `CV Selected (%)` = cv_selected,
-    `CV Reduction (%)` = cv_reduction,
-    `Biomass Retained (%)` = biomass_retained
-  ) %>%
-  arrange(Family)
-
-# Check if pub_table has data
-cat("pub_table rows:", nrow(pub_table), "\n")
+    `Species (all/sel)` = paste0(n_total, "/", n_selected),
+    `CV All` = round(`cv_All species (n=40)`, 1),
+    `CV Selected` = round(`cv_Selected species (n=24)`, 1),
+    `CV Reduction` = round(cv_reduction_pct, 1),
+    `Biomass Retained` = round(biomass_retained_pct, 1)
+  )
 
 # Add overall row
-overall_row <- data.frame(
-  Family = "Overall",
-  `Species (all/selected)` = "40/24",
-  `CV All (%)` = round(mean(variance_reduction$`cv_All species (n=40)`, na.rm = TRUE), 1),
-  `CV Selected (%)` = round(mean(variance_reduction$`cv_Selected species (n=24)`, na.rm = TRUE), 1),
-  `CV Reduction (%)` = round(
-    (mean(variance_reduction$`cv_All species (n=40)`, na.rm = TRUE) - 
-     mean(variance_reduction$`cv_Selected species (n=24)`, na.rm = TRUE)) / 
-    mean(variance_reduction$`cv_All species (n=40)`, na.rm = TRUE) * 100, 1),
-  `Biomass Retained (%)` = round(
-    sum(biomass_retention$total_biomass_selected, na.rm = TRUE) / 
-    sum(biomass_retention$total_biomass_all, na.rm = TRUE) * 100, 1),
-  check.names = FALSE,
-  stringsAsFactors = FALSE
+overall <- data.frame(
+  Family = "**Overall**",
+  `Species (all/sel)` = "**40/24**",
+  `CV All` = round(mean(pub_table$`CV All`, na.rm = TRUE), 1),
+  `CV Selected` = round(mean(pub_table$`CV Selected`, na.rm = TRUE), 1),
+  `CV Reduction` = round((mean(pub_table$`CV All`, na.rm = TRUE) - 
+                   mean(pub_table$`CV Selected`, na.rm = TRUE)) / 
+                  mean(pub_table$`CV All`, na.rm = TRUE) * 100, 1),
+  `Biomass Retained` = round(sum(biomass_retention$total_biomass_selected, na.rm = TRUE) / 
+                   sum(biomass_retention$total_biomass_all, na.rm = TRUE) * 100, 1),
+  check.names = FALSE
 )
 
-pub_table_final <- bind_rows(pub_table, overall_row)
+pub_table_final <- rbind(pub_table, overall)
 
-# Print dimensions for debugging
-cat("Final table dimensions:", nrow(pub_table_final), "x", ncol(pub_table_final), "\n\n")
+# Print with kable - THIS WILL WORK
+kable(pub_table_final,
+      booktabs = TRUE,
+      caption = "Summary of species selection criteria and variance reduction by family. CV = Coefficient of Variation (%). Negative CV reduction indicates slight increase. Families with CV increases retained >86% of biomass.",
+      align = c("l", "c", "c", "c", "c", "c"))
+```
 
-# Create the table
-kbl(pub_table_final,
-    format = "latex",
-    booktabs = TRUE,
-    caption = "Summary of species selection criteria and variance reduction achieved by taxonomic family. CV = Coefficient of Variation.",
-    align = c("l", "c", "c", "c", "c", "c"),
-    linesep = "",
-    longtable = FALSE) %>%
-  kable_styling(
-    latex_options = c("hold_position", "striped"),
-    font_size = 10,
-    full_width = FALSE
-  ) %>%
-  row_spec(0, bold = TRUE) %>%
-  row_spec(nrow(pub_table_final), bold = TRUE, hline_after = TRUE) %>%
-  footnote(
-    general = "Families showing CV increases retained >86\\\\% of biomass, indicating trade-off between model parsimony and minimal information loss.",
-    general_title = "Note:",
-    footnote_as_chunk = TRUE
-  )
+# Export dataset
+```{r}
+# Get the 24 selected species codes
+selected_species_codes <- final_selection$SPECIES_CD
+
+# Filter data_2025 to only selected species
+final_dataset <- data_2025 %>%
+  filter(SPECIES_CD %in% selected_species_codes) %>%
+  # Add selection tier information
+  left_join(final_selection %>% select(SPECIES_CD, selection_method, 
+                                       cv, freq_occurrence, mean_contribution, 
+                                       prop_zeros, selection_score),
+            by = "SPECIES_CD") %>%
+  # Arrange for clarity
+  arrange(group, SPECIES_CD, PRIMARY_SAMPLE_UNIT)
+
+# Export to CSV
+write.csv(final_dataset, 
+          "final_selected_species_data_2025.csv", 
+          row.names = FALSE)
+
+# Summary of exported data
+cat("\n=== FINAL DATASET EXPORTED ===\n")
+cat("File: final_selected_species_data_2025.csv\n")
+cat("Total observations:", nrow(final_dataset), "\n")
+cat("Unique species:", n_distinct(final_dataset$SPECIES_CD), "\n")
+cat("Unique PSUs:", n_distinct(final_dataset$PRIMARY_SAMPLE_UNIT), "\n")
+cat("Families represented:", n_distinct(final_dataset$group), "\n\n")
+
+# Summary by species
+cat("Records per species:\n")
+final_dataset %>%
+  count(group, SPECIES, selection_method) %>%
+  arrange(group, SPECIES) %>%
+  print(n = Inf)
+
+# Quick preview
+cat("\n=== DATASET PREVIEW ===\n")
+head(final_dataset, 10)
 ```
 
 
+```{r}
+# ============================================================================
+# GENERAL REEF FISH BIOMASS INDICATOR BY STATION (PSU) - 2025 (CORRECTED)
+# ============================================================================
+
+# 1. Verify current biomass units
+cat("=== UNIT VERIFICATION ===\n")
+cat("Current biomass unit in RVC data:\n")
+cat("- getPSUBiomass() returns biomass in kg per sampled cylinder\n")
+cat("- RVC standard cylinder area: π × (7.5m)² = 176.71 m²\n\n")
+
+# 2. Filter selected species and calculate total biomass per PSU
+biomass_indicator_2025 <- data_2025 %>%
+  filter(SPECIES_CD %in% selected_species_codes) %>%
+  group_by(PRIMARY_SAMPLE_UNIT, REGION, STRAT, PROT, 
+           LAT_DEGREES, LON_DEGREES, DEPTH) %>%
+  summarise(
+    # Total biomass in kg (sum of all selected species)
+    total_biomass_kg = sum(biomass, na.rm = TRUE),
+    
+    # Number of species present (biomass > 0)
+    n_species_present = n_distinct(SPECIES_CD[biomass > 0]),
+    
+    # Total number of selected species observed at the PSU
+    n_species_observed = n(),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # Unit conversions
+    # RVC uses 15m diameter cylinders = 7.5m radius
+    # Area = π × r² = π × 7.5² = 176.71 m²
+    area_m2 = pi * (7.5^2),
+    
+    # Biomass in g/m²
+    biomass_g_m2 = (total_biomass_kg * 1000) / area_m2,
+    
+    # Biomass in kg/m²
+    biomass_kg_m2 = total_biomass_kg / area_m2,
+    
+    # Biomass in t/km² - CORRECTED
+    # Step 1: kg/m² 
+    # Step 2: Convert to tonnes: kg/m² ÷ 1000 = t/m²
+    # Step 3: Scale to km²: t/m² × 1,000,000 = t/km²
+    # Combined: (kg/m²) × 1000 = t/km²
+    biomass_t_km2 = biomass_kg_m2 * 1000
+  ) %>%
+  arrange(REGION, PRIMARY_SAMPLE_UNIT)
+
+# 3. Statistical summary by region
+cat("=== BIOMASS STATISTICAL SUMMARY BY REGION ===\n\n")
+summary_by_region <- biomass_indicator_2025 %>%
+  group_by(REGION) %>%
+  summarise(
+    n_stations = n(),
+    mean_biomass_kg = round(mean(total_biomass_kg, na.rm = TRUE), 3),
+    sd_biomass_kg = round(sd(total_biomass_kg, na.rm = TRUE), 3),
+    median_biomass_kg = round(median(total_biomass_kg, na.rm = TRUE), 3),
+    mean_biomass_g_m2 = round(mean(biomass_g_m2, na.rm = TRUE), 2),
+    mean_biomass_kg_m2 = round(mean(biomass_kg_m2, na.rm = TRUE), 4),
+    mean_biomass_t_km2 = round(mean(biomass_t_km2, na.rm = TRUE), 1),
+    min_biomass_kg = round(min(total_biomass_kg, na.rm = TRUE), 3),
+    max_biomass_kg = round(max(total_biomass_kg, na.rm = TRUE), 3),
+    .groups = "drop"
+  )
+
+print(summary_by_region)
+
+# 4. Overall summary (all stations)
+cat("\n=== OVERALL SUMMARY (ALL STATIONS) ===\n")
+overall_summary <- biomass_indicator_2025 %>%
+  summarise(
+    total_stations = n(),
+    mean_biomass_kg = round(mean(total_biomass_kg, na.rm = TRUE), 3),
+    sd_biomass_kg = round(sd(total_biomass_kg, na.rm = TRUE), 3),
+    median_biomass_kg = round(median(total_biomass_kg, na.rm = TRUE), 3),
+    mean_biomass_g_m2 = round(mean(biomass_g_m2, na.rm = TRUE), 2),
+    mean_biomass_kg_m2 = round(mean(biomass_kg_m2, na.rm = TRUE), 4),
+    mean_biomass_t_km2 = round(mean(biomass_t_km2, na.rm = TRUE), 1),
+    mean_species_richness = round(mean(n_species_present, na.rm = TRUE), 1)
+  )
+
+print(overall_summary)
+
+# Verification of conversions
+cat("\n=== CONVERSION VERIFICATION ===\n")
+cat("Example with first station:\n")
+example <- biomass_indicator_2025 %>% slice(1)
+cat(sprintf("  Total biomass: %.4f kg\n", example$total_biomass_kg))
+cat(sprintf("  Area: %.2f m²\n", example$area_m2))
+cat(sprintf("  Biomass: %.4f kg/m²\n", example$biomass_kg_m2))
+cat(sprintf("  Biomass: %.2f g/m²\n", example$biomass_g_m2))
+cat(sprintf("  Biomass: %.2f t/km²\n\n", example$biomass_t_km2))
+cat("Check: biomass_g_m2 should = biomass_kg_m2 × 1000\n")
+cat(sprintf("  %.2f = %.4f × 1000? %s\n", 
+            example$biomass_g_m2, 
+            example$biomass_kg_m2,
+            ifelse(abs(example$biomass_g_m2 - example$biomass_kg_m2*1000) < 0.01, "✓ YES", "✗ NO")))
+cat("Check: biomass_t_km2 should = biomass_kg_m2 × 1000\n")
+cat(sprintf("  %.2f = %.4f × 1000? %s\n", 
+            example$biomass_t_km2, 
+            example$biomass_kg_m2,
+            ifelse(abs(example$biomass_t_km2 - example$biomass_kg_m2*1000) < 0.01, "✓ YES", "✗ NO")))
+
+# 5. Export complete dataset
+write.csv(biomass_indicator_2025, 
+          "reef_fish_biomass_indicator_2025.csv", 
+          row.names = FALSE)
+
+cat("\n=== DATASET EXPORTED ===\n")
+cat("File: reef_fish_biomass_indicator_2025.csv\n")
+cat("Stations (PSUs):", nrow(biomass_indicator_2025), "\n")
+
+# 6. Dataset preview
+cat("\n=== FIRST 10 STATIONS (ALL UNITS) ===\n")
+biomass_indicator_2025 %>%
+  select(PRIMARY_SAMPLE_UNIT, REGION, total_biomass_kg, 
+         biomass_kg_m2, biomass_g_m2, biomass_t_km2, n_species_present) %>%
+  head(10) %>%
+  print()
+```
 
